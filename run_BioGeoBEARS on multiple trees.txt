@@ -1,0 +1,287 @@
+
+#This script developed with the help of AI tools depicts how to run BioGeoBEARS on multiple trees from the posterior distribution of BEAST output
+
+
+library(GenSA)
+library(FD)
+library(snow)
+library(parallel)
+library(BioGeoBEARS)
+library(roxygen2)
+library(ape)
+
+tree_dir <- "D:/Thia/below120"
+tree_files <- list.files(
+  path = tree_dir,
+  pattern = "\\.(tre|tree|newick)$",
+  full.names = TRUE
+)
+
+if (length(tree_files) == 0) {
+  stop("No tree files found in ", tree_dir)
+}
+
+cat("Found", length(tree_files), "tree files\n")
+geogfn <- "geog.data"
+tipranges <- getranges_from_LagrangePHYLIP(geogfn)
+max_range_size <- 5
+times_fn <- "timeperiod.txt"
+dispersal_multipliers_fn <- "dispersal_multiplier.txt"
+areas_allowed_fn <- "area_allowed.txt"
+areas_adjacency_fn <- "area_adjacency.txt"
+run_BioGeoBEARS_BAYAREALIKE <- function(treefile,
+                                        geogfn,
+                                        max_range_size,
+                                        times_fn = NULL,
+                                        dispersal_multipliers_fn = NULL,
+                                        areas_adjacency_fn = NULL,
+                                        areas_allowed_fn = NULL) {
+  
+  # Define run object
+  runobj <- define_BioGeoBEARS_run()
+  
+  # Input files
+  runobj$trfn  <- treefile
+  runobj$geogfn <- geogfn
+  
+  runobj$max_range_size <- max_range_size
+  runobj$min_branchlength <- 1e-6
+  runobj$include_null_range <- TRUE
+  
+  runobj$timesfn <- times_fn
+  runobj$dispersal_multipliers_fn <- dispersal_multipliers_fn
+  runobj$areas_adjacency_fn <- areas_adjacency_fn
+  runobj$areas_allowed_fn <- areas_allowed_fn
+  
+  # Speed / stability
+  runobj$on_NaN_error <- -1e50
+  runobj$speedup <- TRUE
+  runobj$use_optimx <- "GenSA"
+  runobj$num_cores_to_use <- 1
+  runobj$force_sparse <- FALSE
+  
+  
+  ##################################################
+  # Read input files
+  ##################################################
+  
+  runobj <- readfiles_BioGeoBEARS_run(runobj)
+  
+  runobj <- section_the_tree(
+    inputs = runobj,
+    make_master_table = TRUE,
+    plot_pieces = FALSE
+  )
+  
+  
+  ##################################################
+  # Ancestral state settings
+  ##################################################
+  
+  runobj$return_condlikes_table <- TRUE
+  runobj$calc_TTL_loglike_from_condlikes_table <- TRUE
+  runobj$calc_ancprobs <- TRUE
+  
+  
+  ##################################################
+  # BAYAREALIKE MODEL
+  ##################################################
+  
+  # Turn off cladogenesis
+  runobj$BioGeoBEARS_model_object@params_table["s","type"] <- "fixed"
+  runobj$BioGeoBEARS_model_object@params_table["s","init"] <- 0
+  runobj$BioGeoBEARS_model_object@params_table["s","est"]  <- 0
+  
+  runobj$BioGeoBEARS_model_object@params_table["v","type"] <- "fixed"
+  runobj$BioGeoBEARS_model_object@params_table["v","init"] <- 0
+  runobj$BioGeoBEARS_model_object@params_table["v","est"]  <- 0
+  
+  # No +J
+  runobj$BioGeoBEARS_model_object@params_table["ysv","type"] <- "1-j"
+  runobj$BioGeoBEARS_model_object@params_table["ys","type"]  <- "ysv*1/1"
+  runobj$BioGeoBEARS_model_object@params_table["y","type"]   <- "1-j"
+  
+  runobj$BioGeoBEARS_model_object@params_table["mx01y","type"] <- "fixed"
+  runobj$BioGeoBEARS_model_object@params_table["mx01y","init"] <- 0.9999
+  runobj$BioGeoBEARS_model_object@params_table["mx01y","est"]  <- 0.9999
+  
+  
+  ##################################################
+  # Final check
+  ##################################################
+  
+  check_BioGeoBEARS_run(runobj)
+  
+  
+  ##################################################
+  # Run model
+  ##################################################
+  
+  res <- bears_optim_run(runobj)
+  
+  return(res)
+}
+
+BAYAREALIKE_results <- vector("list", length(tree_files))
+logL <- numeric(length(tree_files))
+
+
+for (i in seq_along(tree_files)) {
+  
+  cat("\n----------------------------------\n")
+  cat("Running tree", i, "of", length(tree_files), "\n")
+  cat("File:", tree_files[i], "\n")
+  cat("----------------------------------\n")
+  
+  BAYAREALIKE_results[[i]] <-
+    run_BioGeoBEARS_BAYAREALIKE(
+      treefile = tree_files[i],
+      geogfn = geogfn,
+      max_range_size = max_range_size,
+      times_fn = times_fn,
+      dispersal_multipliers_fn = dispersal_multipliers_fn,
+      areas_adjacency_fn = areas_adjacency_fn,
+      areas_allowed_fn = areas_allowed_fn
+    )
+  
+  # Store log-likelihood
+  logL[i] <- BAYAREALIKE_results[[i]]$total_loglikelihood
+  
+  # Save each result immediately (crash-safe)
+  saveRDS(
+    BAYAREALIKE_results[[i]],
+    file = paste0("BAYAREALIKE_tree_", i, ".rds")
+  )
+}
+
+
+#BAYAREALIKE+j#
+
+run_BioGeoBEARS_BAYAREALIKE_J <- function(treefile,
+                                          geogfn,
+                                          max_range_size,
+                                          times_fn = NULL,
+                                          dispersal_multipliers_fn = NULL,
+                                          areas_adjacency_fn = NULL,
+                                          areas_allowed_fn = NULL) {
+  
+  runobj <- define_BioGeoBEARS_run()
+  
+  runobj$trfn  <- treefile
+  runobj$geogfn <- geogfn
+  
+  runobj$max_range_size <- max_range_size
+  runobj$min_branchlength <- 1e-6
+  runobj$include_null_range <- TRUE
+  
+  runobj$timesfn <- times_fn
+  runobj$dispersal_multipliers_fn <- dispersal_multipliers_fn
+  runobj$areas_adjacency_fn <- areas_adjacency_fn
+  runobj$areas_allowed_fn <- areas_allowed_fn
+  
+  runobj$on_NaN_error <- -1e50
+  runobj$speedup <- TRUE
+  runobj$use_optimx <- "GenSA"
+  runobj$num_cores_to_use <- 1
+  runobj$force_sparse <- FALSE
+  
+  ##################################################
+  # Read files
+  ##################################################
+  
+  runobj <- readfiles_BioGeoBEARS_run(runobj)
+  
+  runobj <- section_the_tree(
+    inputs = runobj,
+    make_master_table = TRUE,
+    plot_pieces = FALSE
+  )
+  
+  runobj$return_condlikes_table <- TRUE
+  runobj$calc_TTL_loglike_from_condlikes_table <- TRUE
+  runobj$calc_ancprobs <- TRUE
+  
+  
+  ##################################################
+  # BAYAREALIKE + J SETTINGS
+  ##################################################
+  
+  dstart = 0.0001
+  estart = 0.0001
+  jstart = 0.0001
+  runobj$BioGeoBEARS_model_object@params_table["d","init"] = dstart
+  runobj$BioGeoBEARS_model_object@params_table["d","est"] = dstart
+  runobj$BioGeoBEARS_model_object@params_table["e","init"] = estart
+  runobj$BioGeoBEARS_model_object@params_table["e","est"] = estart
+  runobj$BioGeoBEARS_model_object@params_table["s","type"] = "fixed"
+  runobj$BioGeoBEARS_model_object@params_table["s","init"] = 0.0
+  runobj$BioGeoBEARS_model_object@params_table["s","est"] = 0.0
+  runobj$BioGeoBEARS_model_object@params_table["v","type"] = "fixed"
+  runobj$BioGeoBEARS_model_object@params_table["v","init"] = 0.0
+  runobj$BioGeoBEARS_model_object@params_table["v","est"] = 0.0
+  runobj$BioGeoBEARS_model_object@params_table["j","type"] = "free"
+  runobj$BioGeoBEARS_model_object@params_table["j","init"] = jstart
+  runobj$BioGeoBEARS_model_object@params_table["j","est"] = jstart
+  runobj$BioGeoBEARS_model_object@params_table["j","max"] = 0.99999
+  runobj$BioGeoBEARS_model_object@params_table["ysv","type"] = "1-j"
+  runobj$BioGeoBEARS_model_object@params_table["ys","type"] = "ysv*1/1"
+  runobj$BioGeoBEARS_model_object@params_table["y","type"] = "1-j"
+  runobj$BioGeoBEARS_model_object@params_table["mx01y","type"] = "fixed"
+  runobj$BioGeoBEARS_model_object@params_table["mx01y","init"] = 0.9999
+  runobj$BioGeoBEARS_model_object@params_table["mx01y","est"] = 0.9999
+  runobj$BioGeoBEARS_model_object@params_table["d","min"] = 0.0000001
+  runobj$BioGeoBEARS_model_object@params_table["d","max"] = 4.9999999
+  runobj$BioGeoBEARS_model_object@params_table["e","min"] = 0.0000001
+  runobj$BioGeoBEARS_model_object@params_table["e","max"] = 4.9999999
+  runobj$BioGeoBEARS_model_object@params_table["j","min"] = 0.00001
+  runobj$BioGeoBEARS_model_object@params_table["j","max"] = 0.99999
+  
+  ##################################################
+  # Final check
+  ##################################################
+  
+  check_BioGeoBEARS_run(runobj)
+  
+  ##################################################
+  # Run
+  ##################################################
+  
+  res <- bears_optim_run(runobj)
+  
+  return(res)
+}
+
+BAYAREALIKEJ_results <- vector("list", length(tree_files))
+logL_J <- numeric(length(tree_files))
+
+
+for (i in seq_along(tree_files)) {
+  
+  cat("\n----------------------------------\n")
+  cat("Running BAYAREALIKE+J tree", i,
+      "of", length(tree_files), "\n")
+  cat("File:", tree_files[i], "\n")
+  cat("----------------------------------\n")
+  
+  BAYAREALIKEJ_results[[i]] <-
+    run_BioGeoBEARS_BAYAREALIKE_J(
+      treefile = tree_files[i],
+      geogfn = geogfn,
+      max_range_size = max_range_size,
+      times_fn = times_fn,
+      dispersal_multipliers_fn = dispersal_multipliers_fn,
+      areas_adjacency_fn = areas_adjacency_fn,
+      areas_allowed_fn = areas_allowed_fn
+    )
+  
+  # Store log-likelihood
+  logL_J[i] <- BAYAREALIKEJ_results[[i]]$total_loglikelihood
+  
+  # Save each result (crash-safe)
+  saveRDS(
+    BAYAREALIKEJ_results[[i]],
+    file = paste0("BAYAREALIKEJ_tree_", i, ".rds")
+  )
+}
+
+
