@@ -1,0 +1,86 @@
+
+
+# This script has been generated with the help of AI tools. In earlier analyses we have performed BioGeoBEARS analyses on 100 trees from the posterior distribution of a BEAST run. Since the root age of these trees were different, we created different timeperiods, areas adjacency, areas allowed and dispersal multipliers files to accommodate the root age of these subsets. A total of four subsets were created (less than or equal to 60 mya, less than or equal to 80 mya, less than or equal to 100 mya and less than or equal to 120 mya). Here we ascertained the marginal probability of the root node being distributed in a specific area. Then we concatenated the results from these four subsets that summed up to 100 probability values of a certain area being a root node. Then the mean, standard deviation and confidence interval of these values were calculated. 
+##################################################
+
+# Write target_areas = c(5) for Australian realm, target_areas = c(0,2) for Southeast Asia 
+##################################################
+
+is_exact_state <- function(state_vector, target_areas = c(5)) {
+  
+  if (all(is.na(state_vector))) {
+    return(FALSE)
+  }
+  
+  sv <- state_vector[!is.na(state_vector)]
+  
+  return(
+    length(sv) == length(target_areas) &&
+      all(sort(sv) == sort(target_areas))
+  )
+}
+
+# Initialize
+##################################################
+
+root_exact_state_only_prob <- numeric(length(BAYAREALIKEJ_results))
+
+
+##################################################
+# Loop
+##################################################
+
+for (i in seq_along(BAYAREALIKEJ_results)) {
+  
+  res <- BAYAREALIKEJ_results[[i]]
+  
+  # Read tree
+  tr <- read.tree(tree_files[i])
+  
+  # Root node
+  ntips <- length(tr$tip.label)
+  root_node <- ntips + 1
+  
+  # Root probs
+  root_probs <-
+    res$ML_marginal_prob_each_state_at_branch_top_AT_node[root_node, ]
+  
+  # State space
+  state_names <-
+    res$inputs$all_geog_states_list_usually_inferred_from_areas_maxareas
+  
+  # Exactly M+S states
+  states_exact_state_only <- sapply(state_names, is_exact_state)
+  
+  # Sum probability
+  root_exact_state_only_prob[i] <- sum(root_probs[states_exact_state_only])
+  
+  cat("Tree", i,
+      ": P(exact_state only) =", round(root_exact_state_only_prob[i], 3), "\n")
+}
+
+saveRDS(root_exact_state_only_prob, "p_Oonly_t120.rds")
+
+
+
+# Read files
+##################################################
+
+p60O <- readRDS("p_Oonly_t60.rds")
+p80O <- readRDS("p_Oonly_t80.rds")
+p100O <- readRDS("p_Oonly_t100.rds")
+p120O <- readRDS("p_Oonly_t120.rds")
+
+
+# Concatenate
+##################################################
+
+p_all <- c(p60O, p80O, p100O, p120O)
+
+
+# Calculate mean, confidence interval, sd
+##################################################
+
+mean(p_all)
+quantile(p_all, c(0.025, 0.975))
+sd(p_all)
